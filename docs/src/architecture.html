@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure AWS Foundation - Architecture</title>
+<style>
+  :root {
+    --ink: #16191f; --muted: #545b64; --line: #3b4252;
+    --acct: #232f3e; --vpc: #2e7d32; --pub: #e8f5e9; --priv: #e3f2fd; --privb: #1565c0;
+    --sec: #c62828; --secbg: #fff5f5; --idn: #6a1b9a; --idnbg: #faf5ff;
+    --data: #ef6c00; --databg: #fff8f0; --ext: #607d8b; --extbg: #f5f7f8;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); }
+  #canvas { position: relative; width: 1900px; height: 1300px; }
+  .title { position: absolute; left: 24px; top: 14px; font-size: 26px; font-weight: 700; }
+  .subtitle { position: absolute; left: 24px; top: 48px; font-size: 14px; color: var(--muted); }
+  .zone { position: absolute; border: 2px dashed; border-radius: 10px; }
+  .zone > .label { position: absolute; top: -12px; left: 14px; background: #fff; padding: 0 8px;
+    font-size: 13px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; }
+  .tb { display: inline-block; color: #fff; border-radius: 9px; padding: 0 7px; margin-right: 6px; font-size: 12px; }
+  .box { position: absolute; background: #fff; border: 1.5px solid #9aa4ae; border-radius: 8px;
+    padding: 7px 10px; font-size: 12.5px; line-height: 1.32; box-shadow: 0 1px 2px rgba(0,0,0,.06); z-index: 2; }
+  .box b { display: block; font-size: 13.5px; margin-bottom: 2px; }
+  .box .tag { display: inline-block; font-size: 10.5px; font-weight: 700; color: #fff; border-radius: 4px;
+    padding: 0 5px; margin-bottom: 3px; }
+  .sec  { border-color: var(--sec); }  .sec .tag  { background: var(--sec); }
+  .idn  { border-color: var(--idn); }  .idn .tag  { background: var(--idn); }
+  .data { border-color: var(--data); } .data .tag { background: var(--data); }
+  .net  { border-color: var(--vpc); }  .net .tag  { background: var(--vpc); }
+  .cmp  { border-color: var(--privb); } .cmp .tag { background: var(--privb); }
+  .ext  { border-color: var(--ext); }  .ext .tag  { background: var(--ext); }
+  svg#wires { position: absolute; left: 0; top: 0; z-index: 1; overflow: visible; }
+  svg#wires text { font-size: 11px; fill: var(--ink); paint-order: stroke; stroke: #fff; stroke-width: 4px; }
+  .legend { position: absolute; font-size: 12.5px; line-height: 1.55; }
+  .legend table { border-collapse: collapse; width: 100%; }
+  .legend td { padding: 2px 8px; vertical-align: top; border-bottom: 1px solid #eceff1; }
+  .legend th { text-align: left; padding: 3px 8px; font-size: 12px; background: #f3f5f7; }
+</style>
+</head>
+<body>
+<div id="canvas">
+  <div class="title">Secure AWS Foundation: architecture &amp; trust boundaries</div>
+  <div class="subtitle">AWS CDK (Python) · 3 stacks: security-baseline, network, workload · single account, home region us-east-1, multi-region audit trail</div>
+
+  <!-- Trust boundary 0: outside AWS -->
+  <div class="zone" style="left:20px; top:92px; width:250px; height:930px; border-color:var(--ext); background:var(--extbg)">
+    <div class="label" style="color:var(--ext)"><span class="tb" style="background:var(--ext)">TB0</span>Outside AWS</div>
+  </div>
+  <div id="op" class="box ext" style="left:38px; top:250px; width:214px">
+    <span class="tag">OPERATOR</span><b>Operator workstation</b>AWS CLI + Session Manager plugin, MFA-backed IAM session
+  </div>
+  <div id="inet" class="box ext" style="left:38px; top:560px; width:214px">
+    <span class="tag">INTERNET</span><b>Public internet</b>OS package repos, AWS public service endpoints
+  </div>
+  <div id="mail" class="box ext" style="left:38px; top:850px; width:214px">
+    <span class="tag">NOTIFY</span><b>Security / billing inbox</b>SNS alerts &amp; AWS Budgets e-mail
+  </div>
+
+  <!-- Trust boundary 1: AWS account -->
+  <div class="zone" style="left:300px; top:92px; width:1580px; height:1020px; border-color:var(--acct)">
+    <div class="label" style="color:var(--acct)"><span class="tb" style="background:var(--acct)">TB1</span>AWS account</div>
+  </div>
+
+  <!-- Identity plane -->
+  <div class="zone" style="left:325px; top:125px; width:700px; height:225px; border-color:var(--idn); background:var(--idnbg); border-style:solid; border-width:1.5px">
+    <div class="label" style="color:var(--idn)">Identity &amp; access plane · IAM + Systems Manager</div>
+  </div>
+  <div id="root" class="box idn" style="left:345px; top:150px; width:200px">
+    <span class="tag">ROOT</span><b>Root user</b>MFA, no access keys, never used. Any activity → alert
+  </div>
+  <div id="user" class="box idn" style="left:345px; top:250px; width:200px">
+    <span class="tag">HUMAN</span><b>Operator IAM user</b>MFA; member of break-glass / auditors groups
+  </div>
+  <div id="bg" class="box idn" style="left:610px; top:150px; width:200px">
+    <span class="tag">ROLE</span><b>break-glass-admin</b>AdministratorAccess · MFA &lt; 1h old · 1h session · alert on every AssumeRole
+  </div>
+  <div id="aud" class="box idn" style="left:610px; top:255px; width:200px">
+    <span class="tag">ROLE</span><b>security-auditor</b>SecurityAudit + read log archive (kms:ViaService S3) · MFA
+  </div>
+  <div id="aa" class="box idn" style="left:840px; top:150px; width:165px">
+    <span class="tag">DETECT</span><b>IAM Access Analyzer</b>Account zone of trust; flags external sharing
+  </div>
+
+  <!-- Detection & response -->
+  <div class="zone" style="left:1050px; top:125px; width:810px; height:395px; border-color:var(--sec); background:var(--secbg); border-style:solid; border-width:1.5px">
+    <div class="label" style="color:var(--sec)">Detection &amp; response · AWS managed services · security-baseline stack</div>
+  </div>
+  <div id="ct" class="box sec" style="left:1075px; top:155px; width:230px">
+    <span class="tag">LOGGING</span><b>CloudTrail (multi-region)</b>Mgmt events, global services, log-file validation, SSE-KMS
+  </div>
+  <div id="gd" class="box sec" style="left:1075px; top:265px; width:230px">
+    <span class="tag">THREAT</span><b>GuardDuty</b>CloudTrail, VPC flow, DNS + S3 protection. Paid add-on plans off
+  </div>
+  <div id="cfg" class="box sec" style="left:1075px; top:385px; width:230px">
+    <span class="tag">POSTURE</span><b>AWS Config</b>Recorder (all types) + 13 managed rules. Security Hub CIS v3 optional
+  </div>
+  <div id="eb" class="box sec" style="left:1365px; top:265px; width:225px">
+    <span class="tag">ROUTE</span><b>EventBridge rules</b>GuardDuty sev ≥ 7 · root activity · break-glass AssumeRole
+  </div>
+  <div id="sns" class="box sec" style="left:1640px; top:265px; width:195px">
+    <span class="tag">ALERT</span><b>SNS topic</b>KMS-encrypted, TLS-only, e-mail subscription
+  </div>
+  <div id="bud" class="box sec" style="left:1640px; top:405px; width:195px">
+    <span class="tag">COST</span><b>AWS Budgets</b>25/50/80% actual, 100% forecast
+  </div>
+  <div id="ssm" class="box idn" style="left:840px; top:240px; width:165px">
+    <span class="tag" style="background:var(--idn)">ACCESS</span><b>Session Manager</b>Only way in. KMS-encrypted, logged sessions
+  </div>
+
+  <!-- Data protection -->
+  <div class="zone" style="left:1050px; top:550px; width:810px; height:540px; border-color:var(--data); background:var(--databg); border-style:solid; border-width:1.5px">
+    <div class="label" style="color:var(--data)">Data protection · KMS customer managed keys + log archive · security-baseline stack</div>
+  </div>
+  <div id="kl" class="box data" style="left:1075px; top:585px; width:300px">
+    <span class="tag">KMS CMK</span><b>alias/…/logs</b>Rotation on. Key policy: CloudTrail, Config, flow-log delivery, EventBridge, CW Logs (source/context-scoped)
+  </div>
+  <div id="kd" class="box data" style="left:1650px; top:585px; width:185px">
+    <span class="tag">KMS CMK</span><b>alias/…/data</b>Rotation on. EBS volumes, Session Manager session encryption
+  </div>
+  <div id="lb" class="box data" style="left:1075px; top:780px; width:300px">
+    <span class="tag">S3</span><b>Log archive bucket</b>SSE-KMS (logs CMK) + bucket key · versioned · Block Public Access · ACLs disabled · TLS-only · scoped service write policies · lifecycle 365d
+    <div style="margin-top:4px;color:var(--muted)">prefixes: cloudtrail/ · config/ · vpc-flow-logs/</div>
+  </div>
+  <div id="al" class="box data" style="left:1075px; top:975px; width:300px">
+    <span class="tag">S3</span><b>Access-log bucket</b>S3 server access logs of the archive · SSE-S3 · private · 90d
+  </div>
+  <div id="cwl" class="box data" style="left:1420px; top:800px; width:190px">
+    <span class="tag">CW LOGS</span><b>Session transcripts</b>/…/ssm/sessions · KMS-encrypted · 30-day retention
+  </div>
+  <div id="guard" class="box data" style="left:1650px; top:975px; width:185px">
+    <span class="tag">GUARDRAIL</span><b>Account settings</b>EBS encryption by default · S3 account-level Block Public Access
+  </div>
+
+  <!-- Trust boundary 2: VPC -->
+  <div class="zone" style="left:325px; top:385px; width:700px; height:705px; border-color:var(--vpc)">
+    <div class="label" style="color:var(--vpc)"><span class="tb" style="background:var(--vpc)">TB2</span>VPC 10.20.0.0/16 · 2 AZs · network stack</div>
+  </div>
+  <div id="igw" class="box net" style="left:425px; top:415px; width:180px">
+    <span class="tag">EDGE</span><b>Internet Gateway</b>Public route tables only
+  </div>
+  <div id="fl" class="box net" style="left:825px; top:415px; width:180px">
+    <span class="tag">TELEMETRY</span><b>VPC flow logs (ALL)</b>→ S3 archive, 10-min aggregation
+  </div>
+  <div id="s3gw" class="box net" style="left:625px; top:415px; width:180px">
+    <span class="tag">ENDPOINT</span><b>S3 gateway endpoint</b>Free · keeps S3 traffic off the NAT
+  </div>
+
+  <div class="zone" style="left:345px; top:510px; width:660px; height:165px; border-color:var(--vpc); background:var(--pub); border-style:solid; border-width:1.5px">
+    <div class="label" style="color:var(--vpc); background:var(--pub)">Public subnets · AZ-a / AZ-b · public NACL</div>
+  </div>
+  <div id="nat" class="box net" style="left:365px; top:540px; width:300px">
+    <span class="tag">EGRESS</span><b>NAT instance · t4g.nano · AZ-a</b>SG: in 443 from VPC only · IMDSv2 · encrypted EBS<br>
+    <span style="color:var(--muted)">alt: egress_mode=nat-gateway | none</span>
+  </div>
+  <div id="pubnacl" class="box net" style="left:700px; top:540px; width:285px">
+    <span class="tag">NACL</span><b>Public NACL (stateless)</b>IN: 443 from VPC, 1024-65535 return<br>OUT: 443 any, 1024-65535 to VPC
+  </div>
+
+  <div class="zone" style="left:345px; top:705px; width:660px; height:365px; border-color:var(--privb); background:var(--priv); border-width:2px">
+    <div class="label" style="color:var(--privb); background:var(--priv)"><span class="tb" style="background:var(--privb)">TB3</span>Private subnets · AZ-a / AZ-b · private NACL · no IGW route</div>
+  </div>
+  <div id="ec2" class="box cmp" style="left:365px; top:740px; width:300px">
+    <span class="tag">WORKLOAD</span><b>EC2 · AL2023 · t4g.nano</b>No public IP · no key pair · IMDSv2 required · gp3 root encrypted with data CMK · role: SSM core + session logs only
+  </div>
+  <div id="ec2sg" class="box cmp" style="left:365px; top:905px; width:300px">
+    <span class="tag">SG</span><b>Instance security group</b>Inbound: <b style="display:inline;color:var(--sec)">none (no SSH)</b> · Outbound: TCP 443 only
+  </div>
+  <div id="vpce" class="box cmp" style="left:700px; top:740px; width:285px">
+    <span class="tag">OPTIONAL</span><b>Interface endpoints (1 AZ)</b>ssm, ssmmessages, ec2messages, logs, kms · SG 443 from VPC
+  </div>
+  <div id="privnacl" class="box cmp" style="left:700px; top:905px; width:285px">
+    <span class="tag">NACL</span><b>Private NACL (stateless)</b>IN: 1024-65535 return (+443 from VPC with endpoints)<br>OUT: 443 any (+ephemeral to VPC)
+  </div>
+
+  <!-- Legend & trust boundaries -->
+  <div class="legend" style="left:20px; top:1135px; width:1860px">
+    <table>
+      <tr><th style="width:90px">Boundary</th><th style="width:330px">What crosses it</th><th>Controls</th>
+          <th style="width:250px">Line legend</th></tr>
+      <tr><td><span class="tb" style="background:var(--ext)">TB0→1</span></td><td>Signed API calls and console sign-in from outside AWS</td>
+          <td>IAM auth with MFA; root locked away; MFA-gated role assumption; alerts on root activity &amp; break-glass use; CloudTrail records everything</td>
+          <td><svg width="60" height="10"><line x1="0" y1="5" x2="52" y2="5" stroke="#3b4252" stroke-width="2"/><path d="M52,1 L60,5 L52,9 z" fill="#3b4252"/></svg> data / control flow</td></tr>
+      <tr><td><span class="tb" style="background:var(--vpc)">TB1→2</span></td><td>Nothing inbound. Only return traffic for outbound HTTPS</td>
+          <td>No public-facing services (except the NAT instance); NACLs + SGs; flow logs; GuardDuty VPC/DNS analysis</td>
+          <td><svg width="60" height="10"><line x1="0" y1="5" x2="52" y2="5" stroke="#ef6c00" stroke-width="2" stroke-dasharray="5 4"/><path d="M52,1 L60,5 L52,9 z" fill="#ef6c00"/></svg> encrypted with KMS CMK</td></tr>
+      <tr><td><span class="tb" style="background:var(--privb)">TB2→3</span></td><td>HTTPS from private subnets to NAT / endpoints, ephemeral returns</td>
+          <td>No IGW route; NACLs allow only 443 + ephemeral; instance SG has zero inbound rules; access only via Session Manager (agent dials out)</td>
+          <td><svg width="60" height="10"><line x1="0" y1="5" x2="52" y2="5" stroke="#c62828" stroke-width="2"/><path d="M52,1 L60,5 L52,9 z" fill="#c62828"/></svg> alerting path</td></tr>
+      <tr><td><span class="tb" style="background:var(--acct)">Service</span></td><td>AWS services writing into our resources</td>
+          <td>Bucket + key policies scoped by aws:SourceAccount / aws:SourceArn / encryption context; nothing else can write to the archive</td>
+          <td><svg width="60" height="10"><line x1="0" y1="5" x2="52" y2="5" stroke="#3b4252" stroke-width="2"/><path d="M52,1 L60,5 L52,9 z" fill="#3b4252"/><path d="M8,1 L0,5 L8,9 z" fill="#3b4252"/></svg> session channel</td></tr>
+    </table>
+  </div>
+
+  <svg id="wires" width="1900" height="1300">
+    <defs>
+      <marker id="a-line" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3b4252"/></marker>
+      <marker id="a-kms" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ef6c00"/></marker>
+      <marker id="a-alert" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker>
+      <marker id="a-read" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#6a1b9a"/></marker>
+    </defs>
+  </svg>
+</div>
+
+<script>
+// [from, to, label, style, fromSide, toSide, bidirectional, waypoints]
+const STYLES = {
+  line:  { stroke: "#3b4252", dash: "",    m: "a-line" },
+  kms:   { stroke: "#ef6c00", dash: "6 4", m: "a-kms" },
+  alert: { stroke: "#c62828", dash: "",    m: "a-alert" },
+  read:  { stroke: "#6a1b9a", dash: "2 3", m: "a-read" },
+};
+const W = [
+  ["op", "user", "sign-in+MFA", "line", "r", "l"],
+  ["user", "bg", "MFA", "line", "r:0.35", "l"],
+  ["user", "aud", "MFA", "line", "r:0.7", "l"],
+  ["op", "ssm", "aws ssm start-session (TLS, IAM-authorised)", "line", "t", "r", false, [[145, 110], [1028, 110], [1028, 0]]],
+  ["ec2", "ssm", "session channel: agent dials out on 443, nothing inbound", "line", "l", "b", true, [[335, 0], [335, 368], [922, 368]]],
+  ["ec2", "nat", "443", "line", "t", "b"],
+  ["nat", "igw", "", "line", "t", "b"],
+  ["igw", "inet", "", "line", "l", "r", false, [[312, 0], [312, 0]]],
+  ["ct", "lb", "audit logs", "kms", "l", "l:0.2", false, [[1062, 0], [1062, 0]]],
+  ["cfg", "lb", "", "kms", "l", "l:0.2", false, [[1062, 0], [1062, 0]]],
+  ["fl", "lb", "flow logs", "kms", "r", "l:0.6", false, [[1040, 0], [1040, 0]]],
+  ["kl", "lb", "encrypts", "kms", "b", "t"],
+  ["kl", "cwl", "encrypts", "kms", "r", "t", false, [[0, 0]]],
+  ["lb", "al", "server access logs", "line", "b", "t"],
+  ["gd", "eb", "findings", "alert", "r", "l"],
+  ["ct", "eb", "API events", "alert", "r", "t", false, [[0, 0]]],
+  ["eb", "sns", "", "alert", "r", "l"],
+  ["sns", "mail", "security alerts + budget e-mails", "alert", "r", "r", false, [[1850, 0], [1850, 1101], [278, 1101], [278, 0]]],
+  ["bud", "mail", "", "alert", "r", "r", false, [[1850, 0], [1850, 1101], [278, 1101], [278, 0]]],
+];
+
+const svg = document.getElementById("wires");
+const NS = "http://www.w3.org/2000/svg";
+function anchor(el, spec) {
+  const [side, f0] = spec.split(":"); const f = f0 ? parseFloat(f0) : 0.5;
+  const r = el.getBoundingClientRect();
+  return { l: [r.left, r.top + r.height * f], r: [r.right, r.top + r.height * f],
+           t: [r.left + r.width * f, r.top], b: [r.left + r.width * f, r.bottom] }[side];
+}
+for (const [from, to, label, style, fs, ts, bidi, wp] of W) {
+  const s = STYLES[style];
+  const p0 = anchor(document.getElementById(from), fs);
+  const p1 = anchor(document.getElementById(to), ts);
+  let pts = [p0, ...(wp || []), p1];
+  // Snap the first / last waypoint segments to the anchor axis so lines stay orthogonal.
+  if (wp && wp.length) {
+    pts = [p0, ...wp.map(p => [...p]), p1];
+    const first = pts[1], last = pts[pts.length - 2];
+    if (fs[0] === "t" || fs[0] === "b") first[0] = p0[0]; else first[1] = p0[1];
+    if (ts[0] === "t" || ts[0] === "b") last[0] = p1[0]; else last[1] = p1[1];
+  }
+  const path = document.createElementNS(NS, "path");
+  path.setAttribute("d", "M" + pts.map(p => p.join(",")).join(" L"));
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", s.stroke);
+  path.setAttribute("stroke-width", "1.8");
+  if (s.dash) path.setAttribute("stroke-dasharray", s.dash);
+  path.setAttribute("marker-end", `url(#${s.m})`);
+  if (bidi) path.setAttribute("marker-start", `url(#${s.m})`);
+  svg.appendChild(path);
+  if (label) {
+    // Label at the midpoint of the longest segment.
+    let best = 0, mid = p0;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const [a, b] = [pts[i], pts[i + 1]];
+      const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (len > best) { best = len; mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; }
+    }
+    const t = document.createElementNS(NS, "text");
+    t.setAttribute("x", mid[0]); t.setAttribute("y", mid[1] - 4);
+    t.setAttribute("text-anchor", "middle");
+    t.style.fill = s.stroke;
+    t.textContent = label;
+    svg.appendChild(t);
+  }
+}
+document.body.dataset.ready = "1";
+</script>
+</body>
+</html>

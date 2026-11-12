@@ -1,0 +1,30 @@
+{
+  "app": "python app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": ["README.md", "docs/**", "cdk*.json", "requirements*.txt", "**/__pycache__", "tests", ".venv"]
+  },
+  "context": {
+    "project": "secure-foundation",
+    "alert_email": "",
+    "monthly_budget_usd": 25,
+    "egress_mode": "nat-instance",
+    "enable_interface_endpoints": false,
+    "enable_security_hub": false,
+    "enable_session_manager_prefs": true,
+    "vpc_cidr": "10.20.0.0/16",
+    "instance_type": "t4g.nano",
+    "trusted_admin_principal_arns": [],
+    "retain_data": false,
+    "nag": false,
+
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "@aws-cdk/aws-ec2:restrictDefaultSecurityGroup": true,
+    "@aws-cdk/aws-ec2:uniqueImdsv2TemplateName": true,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/aws-kms:aliasNameRef": true,
+    "@aws-cdk/core:enablePartitionLiterals": true,
+    "@aws-cdk/core:target-partitions": ["aws"],
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
+  }
+}
