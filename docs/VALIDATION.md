@@ -184,7 +184,7 @@ aws ec2 describe-vpcs --filters Name=is-default,Values=true --query "Vpcs[].VpcI
 |------|-------|---------------------|
 | `secure-foundation-ec2-instance-no-public-ip` | The NAT instance | A NAT needs a public IP. In production, use `egress_mode=nat-gateway` (a managed service, not an EC2 instance). A replaced or terminated NAT can also appear until Config re-evaluates. |
 | `secure-foundation-vpc-flow-logs-enabled` | The account's **default VPC** | It's not part of this project. It shows Config evaluates the *whole* account, not just what we deployed. Fix: delete the default VPC (README §1.4). |
-| `secure-foundation-vpc-default-security-group-closed` | The default VPC's default security group | Same cause and fix as above. The project VPC's default SG has no rules. |
+| `secure-foundation-vpc-default-security-group-closed` | The default VPC's default security group | Same cause and fix as above. The project VPC's default SG has no rules. After you delete the default VPC, this result can linger until Config records the security group's deletion. |
 | `secure-foundation-root-account-mfa-enabled` | Only if root MFA is missing | Shows `COMPLIANT` once the manual hardening in README §1.1 is done. |
 
 `secure-foundation-ec2-instance-managed-by-ssm` reports the workload instance as `COMPLIANT`. It doesn't evaluate the NAT
