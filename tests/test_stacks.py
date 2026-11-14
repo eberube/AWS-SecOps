@@ -75,6 +75,25 @@ def test_guardduty_and_config(templates):
     assert len(baseline.find_resources("AWS::Config::ConfigRule")) >= 10
 
 
+def test_config_channel_does_not_wait_for_recorder(templates):
+    # The recorder handler retries StartConfigurationRecorder until a channel exists; if the channel
+    # DependsOn the recorder, the deploy deadlocks and the recorder "did not stabilize".
+    baseline, _, _ = templates
+    (recorder_id,) = baseline.find_resources("AWS::Config::ConfigurationRecorder")
+    (channel,) = baseline.find_resources("AWS::Config::DeliveryChannel").values()
+    assert recorder_id not in channel.get("DependsOn", [])
+    for rule in baseline.find_resources("AWS::Config::ConfigRule").values():
+        assert recorder_id in rule["DependsOn"]
+
+
+def test_nat_instance_adds_swap_before_yum(templates):
+    # t4g.nano (512 MiB) OOM-kills `yum install iptables-services` without swap -> no NAT, no egress.
+    _, network, _ = templates
+    (nat,) = network.find_resources("AWS::EC2::Instance", {"Properties": {"SourceDestCheck": False}}).values()
+    script = json.dumps(nat["Properties"]["UserData"])
+    assert script.index("mkswap /swapfile") < script.index("yum install iptables-services")
+
+
 def test_roles_require_mfa(templates):
     baseline, _, _ = templates
     for name in ("secure-foundation-break-glass-admin", "secure-foundation-security-auditor"):

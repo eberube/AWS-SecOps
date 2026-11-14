@@ -70,6 +70,8 @@ aws ec2 describe-instance-types --instance-types t4g.nano --query "InstanceTypes
 ```
 If something already exists, either delete it or turn off the matching feature (for example `-c enable_session_manager_prefs=false`).
 
+*(Optional hardening)* Delete the region's **default VPC** if nothing uses it. It has no flow logs and an open default security group, so AWS Config flags it (`vpc-flow-logs-enabled`, `vpc-default-security-group-closed`). VPC console → select the default VPC → *Actions → Delete VPC*. You can recreate it later with `aws ec2 create-default-vpc`.
+
 > **Why us-east-1:** root console sign-ins and calls to the global STS endpoint generate their events in us-east-1, so the root-activity and break-glass alerts are most complete there.
 
 ---
@@ -135,7 +137,7 @@ aws configservice describe-compliance-by-config-rule --query "ComplianceByConfig
 
 # Break-glass alert: assume the role with MFA and an email arrives within a few minutes
 ```
-Expected non-compliance: `EC2_INSTANCE_NO_PUBLIC_IP` and `EC2_INSTANCE_MANAGED_BY_SSM` flag the **NAT instance** (documented exceptions). `ROOT_ACCOUNT_MFA_ENABLED` stays non-compliant until step 1.1 is done.
+Expected non-compliance: `ec2-instance-no-public-ip` flags the **NAT instance** (a documented exception). The flow-log and default-SG rules flag the account's **default VPC** unless you deleted it (§1.4). `ROOT_ACCOUNT_MFA_ENABLED` stays non-compliant until step 1.1 is done.
 
 ---
 

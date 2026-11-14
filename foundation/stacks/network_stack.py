@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from aws_cdk import Aspects, CfnOutput, Stack, aws_ec2 as ec2, aws_s3 as s3
 from constructs import Construct
 
@@ -11,6 +13,12 @@ from foundation.stacks.security_baseline_stack import FLOW_LOG_PREFIX
 ANY_IPV4 = "0.0.0.0/0"
 EPHEMERAL = ec2.AclTraffic.tcp_port_range(1024, 65535)
 HTTPS = ec2.AclTraffic.tcp_port(443)
+
+NAT_SWAP_COMMANDS = [
+    "if [ ! -f /swapfile ]; then dd if=/dev/zero of=/swapfile bs=1M count=1024 && chmod 600 /swapfile && mkswap /swapfile; fi",
+    "swapon /swapfile || true",
+    "grep -q '^/swapfile' /etc/fstab || echo '/swapfile swap swap defaults 0 0' >> /etc/fstab",
+]
 
 
 class NetworkStack(Stack):
@@ -27,12 +35,19 @@ class NetworkStack(Stack):
         self.cfg = cfg
 
         nat_provider: ec2.NatProvider | None = None
+        self.nat_user_data: ec2.UserData | None = None
         if cfg.egress_mode == "nat-instance":
+            # A t4g.nano has 512 MiB of RAM, and `yum install iptables-services` in CDK's default NAT
+            # bootstrap gets OOM-killed on it, leaving the instance with no masquerade rule (no egress).
+            # A 1 GiB swap file first keeps the ~$3/month instance size.
+            self.nat_user_data = ec2.UserData.for_linux()
+            self.nat_user_data.add_commands(*NAT_SWAP_COMMANDS, *ec2.NatInstanceProviderV2.DEFAULT_USER_DATA_COMMANDS)
             # ~$3/month t4g.nano NAT instance instead of a ~$33/month NAT Gateway. Single AZ (see DESIGN.md).
             nat_provider = ec2.NatProvider.instance_v2(
                 instance_type=ec2.InstanceType("t4g.nano"),
                 machine_image=ec2.MachineImage.latest_amazon_linux2023(cpu_type=ec2.AmazonLinuxCpuType.ARM_64),
                 default_allowed_traffic=ec2.NatTrafficDirection.OUTBOUND_ONLY,
+                user_data=self.nat_user_data,
             )
         elif cfg.egress_mode == "nat-gateway":
             nat_provider = ec2.NatProvider.gateway()
@@ -62,6 +77,12 @@ class NetworkStack(Stack):
         )
 
         if cfg.egress_mode == "nat-instance":
+            # User data only runs on first boot, and CloudFormation applies a user data change with a
+            # stop/start. Tie the logical ID to the bootstrap script so a change replaces the instance
+            # (the same idea as ec2.Instance's user_data_causes_replacement).
+            digest = hashlib.sha256(self.nat_user_data.render().encode()).hexdigest()[:8]
+            for i, nat in enumerate(nat_provider.gateway_instances):
+                nat.instance.override_logical_id(f"NatInstance{i + 1}{digest}")
             # NAT instance accepts only HTTPS from inside the VPC.
             nat_provider.connections.allow_from(ec2.Peer.ipv4(cfg.vpc_cidr), ec2.Port.tcp(443), "HTTPS from VPC")
             # Enforce IMDSv2 on the NAT instance too.

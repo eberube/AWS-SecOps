@@ -102,19 +102,22 @@ aws s3api get-public-access-block --bucket $LogBucket
 aws s3api get-bucket-ownership-controls --bucket $LogBucket
 aws s3api get-bucket-policy --bucket $LogBucket --query Policy --output text | ConvertFrom-Json | Select-Object -Expand Statement | Select-Object Sid, Effect
 aws s3api get-bucket-logging --bucket $LogBucket
-aws kms get-key-rotation-status --key-id alias/secure-foundation/logs
-aws kms get-key-rotation-status --key-id alias/secure-foundation/data
+foreach ($k in "logs", "data") {   # get-key-rotation-status needs a key ID, not an alias
+  $id = aws kms describe-key --key-id "alias/secure-foundation/$k" --query KeyMetadata.KeyId --output text
+  aws kms get-key-rotation-status --key-id $id --query "{key:'$k',rotation:KeyRotationEnabled,days:RotationPeriodInDays}"
+}
 aws s3 ls "s3://$LogBucket/cloudtrail/AWSLogs/" --recursive | Select-Object -First 5
 ```
 
 - [ ] `logging: true`, with no `lastError`
 - [ ] Multi-region and global service events are on, a `KmsKeyId` is set, and log file validation is on
-- [ ] Bucket encryption is `aws:kms` with the CMK and a bucket key
+- [ ] Bucket encryption is `aws:kms` with the CMK and a bucket key (`BlockedEncryptionTypes: SSE-C` is the S3 default for new buckets)
 - [ ] Versioning is `Enabled`, and all four Block Public Access settings are `true`
 - [ ] Ownership is `BucketOwnerEnforced` (ACLs are disabled)
-- [ ] The bucket policy includes a **Deny** statement for requests without TLS (`aws:SecureTransport = false`)
-- [ ] Server access logging goes to the separate access-log bucket
-- [ ] `KeyRotationEnabled: true` for both CMKs
+- [ ] The bucket policy's first statement is an unnamed **Deny**. It is the TLS-only rule
+      (`aws:SecureTransport = false`), followed by `FlowLogs*` and `Config*` service-delivery statements
+- [ ] Server access logging goes to the separate access-log bucket under `log-bucket/`
+- [ ] `rotation: True` for both CMKs (yearly: `days: 365`)
 - [ ] Log files are appearing under `cloudtrail/`. This takes up to 15 minutes after the deploy.
 
 **Optional tamper-evidence proof.** Run this at the end: digest files are written hourly.
@@ -159,21 +162,29 @@ aws configservice describe-compliance-by-config-rule `
 ```
 
 - [ ] The recorder is `recording: true` with `lastStatus: SUCCESS`
-- [ ] All 13 rules are listed, and most are `COMPLIANT`
+- [ ] All 13 rules are listed (named `secure-foundation-<managed-rule-id>`), and most are `COMPLIANT`.
+      `INSUFFICIENT_DATA` means the first evaluation hasn't finished yet. Wait a few minutes and re-run.
+
+Show what each non-compliant rule flagged:
+```powershell
+foreach ($r in (aws configservice describe-compliance-by-config-rule --compliance-types NON_COMPLIANT --query "ComplianceByConfigRules[].ConfigRuleName" --output text) -split "\s+" | Where-Object { $_ }) {
+  "$r -> " + ((aws configservice get-compliance-details-by-config-rule --config-rule-name $r --compliance-types NON_COMPLIANT `
+    --query "EvaluationResults[].EvaluationResultIdentifier.EvaluationResultQualifier.ResourceId" --output text) -join ' ')
+}
+aws ec2 describe-vpcs --filters Name=is-default,Values=true --query "Vpcs[].VpcId" --output text   # the account's default VPC, if any
+```
 
 **Expected, documented exceptions.** These are worth explaining rather than hiding:
 
 | Rule | Flags | Why it's acceptable |
 |------|-------|---------------------|
-| `EC2_INSTANCE_NO_PUBLIC_IP` | The NAT instance | A NAT needs a public IP. In production, use `egress_mode=nat-gateway` (a managed service, not an EC2 instance). |
-| `EC2_INSTANCE_MANAGED_BY_SSM` | The NAT instance | It's an appliance with no instance role. In production, a NAT Gateway removes it. |
-| `ROOT_ACCOUNT_MFA_ENABLED` | Only if root MFA is missing | Shows `COMPLIANT` once the manual hardening in README §1.1 is done. |
+| `secure-foundation-ec2-instance-no-public-ip` | The NAT instance | A NAT needs a public IP. In production, use `egress_mode=nat-gateway` (a managed service, not an EC2 instance). A replaced or terminated NAT can also appear until Config re-evaluates. |
+| `secure-foundation-vpc-flow-logs-enabled` | The account's **default VPC** | It's not part of this project. It shows Config evaluates the *whole* account, not just what we deployed. Fix: delete the default VPC (README §1.4). |
+| `secure-foundation-vpc-default-security-group-closed` | The default VPC's default security group | Same cause and fix as above. The project VPC's default SG has no rules. |
+| `secure-foundation-root-account-mfa-enabled` | Only if root MFA is missing | Shows `COMPLIANT` once the manual hardening in README §1.1 is done. |
 
-To see which resource a rule flagged:
-```powershell
-aws configservice get-compliance-details-by-config-rule --config-rule-name <rule-name> --compliance-types NON_COMPLIANT `
-  --query "EvaluationResults[].EvaluationResultIdentifier.EvaluationResultQualifier.ResourceId"
-```
+`secure-foundation-ec2-instance-managed-by-ssm` reports the workload instance as `COMPLIANT`. It doesn't evaluate the NAT
+instance, because the NAT never registers with Systems Manager.
 
 > **Point to make:** compliance is evaluated continuously. The known exceptions also show that the rules
 > really evaluate this account's resources.
@@ -234,7 +245,8 @@ aws ec2 describe-security-groups --filters Name=vpc-id,Values=$VpcId Name=group-
 
 - [ ] 4 subnets across 2 AZs. Only the public subnets auto-assign public IPs.
 - [ ] The NACLs allow only TCP 443 and the ephemeral return range (1024–65535)
-- [ ] Public subnets route `0.0.0.0/0` to the internet gateway. Private subnets route it to the NAT instance's ENI.
+- [ ] Public subnets route `0.0.0.0/0` to the internet gateway (`igw-…`). Private subnets route it to the NAT
+      instance's ENI (`eni-…`). One entry is `[]`: that's the VPC's unused main route table, which has no default route.
 - [ ] Flow logs are `ACTIVE`, capture `ALL` traffic, and deliver to the log archive bucket
 - [ ] The default security group has no rules
 

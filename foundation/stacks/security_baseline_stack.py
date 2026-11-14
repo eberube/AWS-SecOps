@@ -365,12 +365,19 @@ class SecurityBaselineStack(Stack):
                 delivery_frequency="TwentyFour_Hours"
             ),
         )
-        channel.add_resource_dependency(recorder)
+        # No dependency between the recorder and the channel: CloudFormation's recorder handler
+        # creates the recorder and then keeps retrying StartConfigurationRecorder until a delivery
+        # channel exists. Making the channel wait for the recorder deadlocks the deploy
+        # (NoAvailableDeliveryChannelException, then "did not stabilize"), so they create in parallel.
         channel.node.add_dependency(role)
         channel.node.add_dependency(self.log_bucket)
 
         for rule_id, identifier in CONFIG_RULES.items():
-            rule = config.ManagedRule(self, f"Rule{rule_id}", identifier=identifier)
+            rule = config.ManagedRule(
+                self, f"Rule{rule_id}", identifier=identifier,
+                # Readable names (e.g. secure-foundation-ec2-instance-no-public-ip) instead of generated ones.
+                config_rule_name=f"{self.cfg.project}-{identifier.lower().replace('_', '-')}",
+            )
             rule.node.add_dependency(recorder)
             rule.node.add_dependency(channel)
 
