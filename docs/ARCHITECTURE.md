@@ -46,7 +46,7 @@ flowchart TB
         subgraph VPC["Trust boundary 2: VPC 10.20.0.0/16 (2 AZs), flow logs to S3"]
             IGW["Internet Gateway"]
             subgraph PUB["Public subnets (AZ-a, AZ-b), public NACL"]
-                NAT["NAT instance t4g.nano (AZ-a)<br/>SG: 443 in from VPC only"]
+                NAT["NAT instance t4g.nano (AZ-a)<br/>SG: 443 in from VPC only<br/>1 GiB swap at boot, replaced on bootstrap change"]
             end
             subgraph PRIV["Trust boundary 3: private subnets (AZ-a, AZ-b), private NACL"]
                 EC2["EC2 t4g.nano (AL2023)<br/>no public IP, IMDSv2,<br/>SG: no inbound, 443 out only,<br/>EBS encrypted with data CMK"]
