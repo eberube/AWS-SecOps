@@ -25,7 +25,7 @@ Dependencies flow one way only: workload depends on network, which depends on ba
 
 ### Networking
 * **Two AZs with public and private /24 subnets.** This meets the multi-AZ requirement at the smallest size. The private tier has no route to the Internet Gateway.
-* **Controlled egress: a NAT instance, not a NAT Gateway (default).** A t4g.nano NAT instance with a public IPv4 costs about $7 a month. A NAT Gateway costs about $33 a month plus data processing. The NAT instance's security group accepts only TCP 443 from the VPC CIDR. The public NACL allows only 443 outbound. The trade-offs are a single AZ and self-managed patching, so `-c egress_mode=nat-gateway` switches to a managed gateway. `-c egress_mode=none` removes internet egress entirely: private subnets become isolated and reach SSM, KMS and Logs through PrivateLink.
+* **Controlled egress: a NAT instance, not a NAT Gateway (default).** A t4g.nano NAT instance with a public IPv4 costs about $7 a month. A NAT Gateway costs about $33 a month plus data processing. The NAT instance's security group accepts only TCP 443 from the VPC CIDR. The public NACL allows only 443 outbound. With 512 MiB of RAM, CDK's default NAT bootstrap (`yum install iptables-services`) gets killed by the out-of-memory killer. The bootstrap therefore creates a 1 GiB swap file first, and the instance's logical ID is derived from a hash of its bootstrap script, so changing the script replaces the instance rather than leaving the old configuration in place (user data only runs on first boot). The trade-offs are a single AZ and self-managed patching, so `-c egress_mode=nat-gateway` switches to a managed gateway. `-c egress_mode=none` removes internet egress entirely: private subnets become isolated and reach SSM, KMS and Logs through PrivateLink.
 * **Interface endpoints are optional and in one AZ.** Five endpoints across two AZs would cost about $73 a month, which is more than the rest of the deployment combined. In production I would enable them in every AZ and remove the NAT path for management traffic.
 * **The S3 gateway endpoint is always on (free).** It keeps package-repository and SSM-agent S3 traffic off the NAT.
 * **Least-privilege security groups.** The instance SG has *no* inbound rules and allows outbound 443 only. The endpoint SG allows inbound 443 from the VPC and nothing outbound. The default SG is stripped of all rules by `restrict_default_security_group`.
@@ -44,9 +44,10 @@ Dependencies flow one way only: workload depends on network, which depends on ba
 * **Account guardrails applied through SDK custom resources** (no native CloudFormation type exists): EBS encryption by default, and S3 account-level Block Public Access.
 
 ### Threat detection
-* **GuardDuty** with foundational sources (CloudTrail, VPC flow, DNS) plus S3 Protection. The other protection plans (EKS, RDS, Lambda, Malware, Runtime) are set to DISABLED explicitly. That keeps cost predictable and documents intent. Each plan is a one-line change when a matching workload appears.
+* **GuardDuty** with foundational sources (CloudTrail, VPC flow, DNS) plus S3 Protection. The other protection plans (EKS, RDS, Lambda, Malware, Runtime) are set to DISABLED explicitly. That keeps cost predictable and documents intent. Each plan is a one-line change when a matching workload appears. The detector runs in the home region only. CloudTrail covers every region, but in production GuardDuty would be enabled in all regions through a delegated administrator (§5).
 * **Findings with severity 7 or higher** go through EventBridge to an encrypted SNS topic and then to email.
 * **Root user activity and break-glass role assumption** also trigger alerts. Both rules use `ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS`, because console sign-ins and `AssumeRole` are read-only events that EventBridge does not otherwise receive.
+* **Alerts carry a summary, never the raw event.** Each alert is built from selected fields: principal, source IP, user agent, time, region and event ID. A raw `AssumeRole` event includes the issued access key ID and session token, and email is outside the trust boundary. The full record stays in the encrypted trail, and a unit test fails the build if any alert rule forwards a raw event.
 
 ### Secure access
 * **EC2 in a private subnet:** no public IP, IMDSv2 required, CMK-encrypted gp3 root volume, and Amazon Linux 2023 (SSM agent preinstalled).
@@ -62,8 +63,11 @@ Dependencies flow one way only: workload depends on network, which depends on ba
 
 ### Configuration monitoring
 * **AWS Config** records all supported resource types, plus IAM in the home region. Snapshots are delivered daily to the encrypted archive.
-* **13 managed rules** map directly to the controls above: root MFA and keys, multi-region trail, trail encryption, S3 public access, EBS encryption, no inbound SSH, no public IP on EC2, IMDSv2, managed by SSM, default SG closed, flow logs, and GuardDuty.
-* **One expected finding:** `EC2_INSTANCE_NO_PUBLIC_IP` flags the NAT instance. This is a documented exception that `egress_mode=none` removes. It is a useful walkthrough example of finding triage.
+* **13 managed rules** map directly to the controls above: root MFA and keys, multi-region trail, trail encryption, S3 public access, EBS encryption, no inbound SSH, no public IP on EC2, IMDSv2, managed by SSM, default SG closed, flow logs, and GuardDuty. They're named `secure-foundation-<managed-rule-id>` so findings are readable at a glance.
+* **The delivery channel does not wait for the recorder.** CloudFormation's recorder handler creates the recorder and then retries `StartConfigurationRecorder` until a delivery channel exists. Making the channel depend on the recorder deadlocks the deploy, so the two are created in parallel and only the rules depend on both.
+* **Expected findings, all useful for triage in a walkthrough:**
+  * `ec2-instance-no-public-ip` flags the NAT instance. This is a documented exception that `egress_mode=nat-gateway` or `none` removes.
+  * `vpc-flow-logs-enabled` and `vpc-default-security-group-closed` flag the region's **default VPC**. It is outside this project, which shows that Config evaluates the whole account. The fix is to delete the default VPC (README §1.4), which a landing zone would do automatically for every new account.
 * **Security Hub with CIS v3.0.0 is a flag (`enable_security_hub`)** and off by default. Its per-check pricing adds cost, and the Config rules already cover the highest-value CIS controls.
 
 ## 4. Cost summary (us-east-1, default flags, approximate)
@@ -120,3 +124,16 @@ How each component here maps across:
 * **Incident response:** GuardDuty alerts arrive through SNS (later into a SIEM or ticketing system). The runbook is: isolate the instance by swapping to a deny-all SG, snapshot the EBS volume, and investigate with the auditor role. Break-glass use is alerted and reviewed.
 * **Evidence:** CloudTrail with file validation, Config history and the compliance timeline, and session transcripts, all in the KMS-encrypted archive.
 * **Next controls:** Object Lock, Security Hub with CIS and FSBP standards, Inspector for EC2 vulnerabilities, Patch Manager baselines, an IAM password policy, CloudTrail data events for the log bucket, Detective, and an egress firewall with domain allow-lists.
+
+## 7. Lessons from the first live deployment
+
+`pytest`, `cdk synth` and cdk-nag all passed before the first deploy, but deploying to a real account and working through [VALIDATION.md](VALIDATION.md) still found issues that only show up at runtime:
+
+| Found by | Issue | Fix | Guard |
+|----------|-------|-----|-------|
+| Deploy rolled back | Config recorder "did not stabilize": the channel depended on the recorder, while the recorder waited for a channel | Create them in parallel. Only the rules depend on both | Unit test on `DependsOn` |
+| SSM agent never registered | The t4g.nano NAT ran out of memory during `yum`, so no masquerade rule was set and there was no egress | Add a 1 GiB swap file before the install. A bootstrap change now replaces the instance | Unit test on the order of the user data commands |
+| Reading the alert email | The break-glass alert emailed the raw `AssumeRole` event, including the session token | Alerts send a field summary | Unit test: every alert rule uses an input transformer |
+| Config results | The default VPC is flagged by two rules | Documented exception, plus an optional manual step to delete it | Checklist expectation |
+
+**Takeaway:** synth-time checks prove the templates are well formed and match policy. Only a deployment shows whether they work, so every runtime bug found here now has a synth-time test that would have caught it. In a pipeline, the same validation steps would run as post-deploy smoke tests in a non-production account.
