@@ -165,7 +165,9 @@ aws configservice describe-compliance-by-config-rule `
 
 - [ ] The recorder is `recording: true` with `lastStatus: SUCCESS`
 - [ ] All 13 rules are listed (named `secure-foundation-<managed-rule-id>`), and most are `COMPLIANT`.
-      `INSUFFICIENT_DATA` means the first evaluation hasn't finished yet. Wait a few minutes and re-run.
+      `INSUFFICIENT_DATA` means a rule has no results yet. The EC2 rules only evaluate when a resource changes, so after a
+      redeploy that recreates rules they can stay in this state. To force an evaluation, run this and check again in about 2 minutes:
+      `aws configservice start-config-rules-evaluation --config-rule-names secure-foundation-ec2-imdsv2-check secure-foundation-ec2-instance-managed-by-ssm secure-foundation-ec2-instance-no-public-ip secure-foundation-encrypted-volumes`
 
 Show what each non-compliant rule flagged:
 ```powershell
