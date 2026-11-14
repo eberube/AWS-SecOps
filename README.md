@@ -16,6 +16,7 @@ A focused, production-minded security baseline for a single AWS account:
 
 * Architecture diagram and trust boundaries: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (image: [docs/architecture.png](docs/architecture.png))
 * Design decisions, cost breakdown and multi-account evolution: [docs/DESIGN.md](docs/DESIGN.md) (image: [docs/design.png](docs/design.png))
+* Post-deploy validation checklist and demo script: [docs/VALIDATION.md](docs/VALIDATION.md)
 * Regenerate the images after editing the docs: `pip install -r requirements-docs.txt` then `python scripts/render_docs.py` (uses your installed Edge/Chrome)
 
 **Estimated cost with defaults:** about $12–15 a month (about $0.45 a day), us-east-1. See [DESIGN.md §4](docs/DESIGN.md#4-cost-summary-us-east-1-default-flags-approximate).
@@ -113,6 +114,8 @@ A deploy takes about 10 minutes. Set values permanently in `cdk.json` → `conte
 
 ## 3. Verify (walkthrough script)
 
+The quick checks are below. **[docs/VALIDATION.md](docs/VALIDATION.md)** has the full checklist, covering every requirement with expected results.
+
 ```powershell
 # Session Manager: no SSH, no public IP
 aws ssm describe-instance-information --query "InstanceInformationList[].{id:InstanceId,ping:PingStatus}"
@@ -132,7 +135,7 @@ aws configservice describe-compliance-by-config-rule --query "ComplianceByConfig
 
 # Break-glass alert: assume the role with MFA and an email arrives within a few minutes
 ```
-Expected non-compliance: `EC2_INSTANCE_NO_PUBLIC_IP` flags the **NAT instance** (a documented exception). `ROOT_ACCOUNT_MFA_ENABLED` stays non-compliant until step 1.1 is done.
+Expected non-compliance: `EC2_INSTANCE_NO_PUBLIC_IP` and `EC2_INSTANCE_MANAGED_BY_SSM` flag the **NAT instance** (documented exceptions). `ROOT_ACCOUNT_MFA_ENABLED` stays non-compliant until step 1.1 is done.
 
 ---
 
@@ -171,6 +174,7 @@ scripts/cleanup_leftovers.py        # post-destroy cleanup (dry run by default)
 scripts/render_docs.py              # renders docs/*.png from the HTML/Markdown sources
 docs/ARCHITECTURE.md                # diagram + trust boundaries
 docs/DESIGN.md                      # decisions, costs, multi-account evolution
+docs/VALIDATION.md                  # post-deploy validation checklist / demo script
 docs/architecture.png, design.png   # image versions of the two docs
 docs/src/architecture.html          # source of the architecture diagram
 ```
