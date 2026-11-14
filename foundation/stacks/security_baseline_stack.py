@@ -46,6 +46,26 @@ CONFIG_RULES = {
     "GuardDutyEnabled": "GUARDDUTY_ENABLED_CENTRALIZED",
 }
 
+def _cloudtrail_summary(title: str, extra_path: str, extra_label: str) -> events.RuleTargetInput:
+    """Alert text built from selected CloudTrail fields only.
+
+    Forwarding the raw event would email whatever the API response contained (for AssumeRole, the
+    issued access key ID and session token). Full detail stays in the encrypted trail.
+    """
+    field = lambda path: events.EventField.from_path(f"$.detail.{path}")  # noqa: E731
+    return events.RuleTargetInput.from_multiline_text(
+        f"{title}\n"
+        f"Event:      {field('eventName')}\n"
+        f"Principal:  {field('userIdentity.arn')}\n"
+        f"Source IP:  {field('sourceIPAddress')}\n"
+        f"User agent: {field('userAgent')}\n"
+        f"Time (UTC): {field('eventTime')}\n"
+        f"Region:     {field('awsRegion')}\n"
+        f"{extra_label.capitalize() + ':':<11} {field(extra_path)}\n"
+        f"Event ID:   {field('eventID')} (full record in the CloudTrail log archive)"
+    )
+
+
 FLOW_LOG_PREFIX = "vpc-flow-logs"
 CONFIG_PREFIX = "config"
 TRAIL_PREFIX = "cloudtrail"
@@ -274,7 +294,9 @@ class SecurityBaselineStack(Stack):
                 detail_type=["AWS API Call via CloudTrail", "AWS Console Sign In via CloudTrail"],
                 detail={"userIdentity": {"type": ["Root"]}},
             ),
-            targets=[targets.SnsTopic(self.alerts_topic)],
+            targets=[targets.SnsTopic(self.alerts_topic, message=_cloudtrail_summary(
+                "ROOT USER ACTIVITY", "eventSource", "service",
+            ))],
         )
         # Include read-only management events (e.g. a root user just browsing the console).
         root_rule.node.default_child.add_property_override("State", "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS")
@@ -457,7 +479,11 @@ class SecurityBaselineStack(Stack):
                 detail_type=["AWS API Call via CloudTrail"],
                 detail={"eventName": ["AssumeRole"], "requestParameters": {"roleArn": [self.break_glass_role.role_arn]}},
             ),
-            targets=[targets.SnsTopic(self.alerts_topic)],
+            # A summary, not the raw event: the raw AssumeRole event carries the issued access key ID
+            # and session token in responseElements, which must not leave the account by email.
+            targets=[targets.SnsTopic(self.alerts_topic, message=_cloudtrail_summary(
+                "BREAK-GLASS ROLE ASSUMED", "requestParameters.roleSessionName", "session",
+            ))],
         )
         bg_rule.node.default_child.add_property_override("State", "ENABLED_WITH_ALL_CLOUDTRAIL_MANAGEMENT_EVENTS")
 

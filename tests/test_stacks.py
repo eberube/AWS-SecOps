@@ -94,6 +94,17 @@ def test_nat_instance_adds_swap_before_yum(templates):
     assert script.index("mkswap /swapfile") < script.index("yum install iptables-services")
 
 
+def test_alerts_never_forward_raw_events(templates):
+    # Raw CloudTrail AssumeRole events include the issued access key ID and session token.
+    baseline, _, _ = templates
+    rules = baseline.find_resources("AWS::Events::Rule")
+    assert len(rules) == 3
+    for rule in rules.values():
+        for target in rule["Properties"]["Targets"]:
+            assert "InputTransformer" in target, "alert targets must send a summary, not the raw event"
+            assert "responseElements" not in json.dumps(target)
+
+
 def test_roles_require_mfa(templates):
     baseline, _, _ = templates
     for name in ("secure-foundation-break-glass-admin", "secure-foundation-security-auditor"):

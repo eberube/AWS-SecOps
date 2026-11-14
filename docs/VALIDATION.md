@@ -12,6 +12,8 @@ for its first evaluations, and CloudTrail delivers log files every 5–15 minute
 
 ## 0. Setup (right after `cdk deploy --all`)
 
+- [ ] **Set the console region to US East (N. Virginia) us-east-1** (the selector at the top right). GuardDuty, Config and
+      the instances exist only in the home region. In any other region, GuardDuty shows its "Try GuardDuty for free" page.
 - [ ] **Confirm the SNS subscription.** Click the link in the "AWS Notification – Subscription Confirmation"
       email. Until you do, no alerts are delivered.
 - [ ] Load the stack outputs into variables. Every later step uses these:
@@ -196,10 +198,16 @@ instance, because the NAT never registers with Systems Manager.
 **Requirement:** a break-glass admin role that is MFA-gated and alerts whenever it is used.
 
 1. Sign in to the console as your IAM user **with MFA**.
-2. Open `$BreakGlassUrl` (run `$BreakGlassUrl` in PowerShell to print it) and choose **Switch role**.
+2. Print the link with `$BreakGlassUrl` in PowerShell, paste it into the browser where you're signed in, and choose **Switch Role**.
+   *(CLI alternative: a `[profile breakglass]` in `~/.aws/config` with `role_arn`, `source_profile` and `mfa_serial`, then
+   `aws sts get-caller-identity --profile breakglass`. The CLI prompts for the MFA code.)*
+3. Return with the top-right menu → **Switch back**.
 
 - [ ] The switch succeeds, and the session is limited to 1 hour
-- [ ] Within a few minutes an alert email arrives containing the CloudTrail `AssumeRole` event (the JSON shows who, the source IP and the time)
+- [ ] Within 5–10 minutes an alert email arrives starting **BREAK-GLASS ROLE ASSUMED**, with the principal, source IP,
+      user agent, time, region, session name and CloudTrail event ID
+- [ ] The email contains **no credentials**. The raw `AssumeRole` event includes the issued access key ID and session
+      token, so the alert sends a summary of selected fields, and the full record stays in the encrypted trail.
 - [ ] *(Negative test)* The switch is **denied** from a session signed in without MFA, or whose MFA sign-in is more than an hour old
 
 > **Point to make:** admin rights exist for emergencies only. Using them requires recent MFA, a session lasts at
@@ -211,7 +219,7 @@ instance, because the NAT never registers with Systems Manager.
 
 **Requirement:** an auditor role that can see everything security-related and change nothing.
 
-Open `$AuditorUrl` and switch role, then try these in the console:
+Print `$AuditorUrl`, open it in the browser and switch role. Then try these in the console, in region **us-east-1**:
 
 | Action | Expected |
 |--------|----------|
@@ -275,7 +283,7 @@ aws budgets describe-budgets --account-id $Acct --query "Budgets[].{name:BudgetN
 
 Sign in as root briefly (with MFA) and sign straight out.
 
-- [ ] An alert email arrives containing the `ConsoleLogin` event for `Root`
+- [ ] An alert email arrives starting **ROOT USER ACTIVITY**, showing the `ConsoleLogin` event, the source IP and the time
 
 Skipping this is also a defensible answer: "I'd verify it in a sandbox, but root stays locked away."
 
