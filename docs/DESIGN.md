@@ -66,7 +66,7 @@ Dependencies flow one way only: workload depends on network, which depends on ba
 * **13 managed rules** map directly to the controls above: root MFA and keys, multi-region trail, trail encryption, S3 public access, EBS encryption, no inbound SSH, no public IP on EC2, IMDSv2, managed by SSM, default SG closed, flow logs, and GuardDuty. They're named `secure-foundation-<managed-rule-id>` so findings are readable at a glance.
 * **The delivery channel does not wait for the recorder.** CloudFormation's recorder handler creates the recorder and then retries `StartConfigurationRecorder` until a delivery channel exists. Making the channel depend on the recorder deadlocks the deploy, so the two are created in parallel and only the rules depend on both.
 * **Expected findings, all useful for triage in a walkthrough:**
-  * `ec2-instance-no-public-ip` flags the NAT instance. This is a documented exception that `egress_mode=nat-gateway` or `none` removes.
+  * `ec2-instance-no-public-ip` and `ec2-instance-managed-by-ssm` flag the NAT instance. It needs a public IP and, as an appliance with no instance role, never registers with Systems Manager. These are documented exceptions that `egress_mode=nat-gateway` or `none` removes.
   * `vpc-flow-logs-enabled` and `vpc-default-security-group-closed` flag the region's **default VPC**. It is outside this project, which shows that Config evaluates the whole account. The fix is to delete the default VPC (README §1.4), which a landing zone would do automatically for every new account.
 * **Security Hub with CIS v3.0.0 is a flag (`enable_security_hub`)** and off by default. Its per-check pricing adds cost, and the Config rules already cover the highest-value CIS controls.
 

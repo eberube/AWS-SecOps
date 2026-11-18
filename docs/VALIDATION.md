@@ -7,6 +7,7 @@ Each section lists the commands, what you should see, and the point it proves.
 for its first evaluations, and CloudTrail delivers log files every 5–15 minutes.
 
 **Shell:** PowerShell, AWS CLI v2, Session Manager plugin, and an IAM admin identity signed in with MFA (not root).
+On a Mac, use **[VALIDATION-macos.md](VALIDATION-macos.md)**: the same checklist with zsh commands.
 
 ---
 
@@ -183,12 +184,10 @@ aws ec2 describe-vpcs --filters Name=is-default,Values=true --query "Vpcs[].VpcI
 | Rule | Flags | Why it's acceptable |
 |------|-------|---------------------|
 | `secure-foundation-ec2-instance-no-public-ip` | The NAT instance | A NAT needs a public IP. In production, use `egress_mode=nat-gateway` (a managed service, not an EC2 instance). A replaced or terminated NAT can also appear until Config re-evaluates. |
+| `secure-foundation-ec2-instance-managed-by-ssm` | The NAT instance | It's an appliance with no instance role, so it never registers with Systems Manager. A NAT Gateway removes it. This can take a re-evaluation to appear. |
 | `secure-foundation-vpc-flow-logs-enabled` | The account's **default VPC** | It's not part of this project. It shows Config evaluates the *whole* account, not just what we deployed. Fix: delete the default VPC (README §1.4). |
 | `secure-foundation-vpc-default-security-group-closed` | The default VPC's default security group | Same cause and fix as above. The project VPC's default SG has no rules. After you delete the default VPC, this result can linger until Config records the security group's deletion. |
 | `secure-foundation-root-account-mfa-enabled` | Only if root MFA is missing | Shows `COMPLIANT` once the manual hardening in README §1.1 is done. |
-
-`secure-foundation-ec2-instance-managed-by-ssm` reports the workload instance as `COMPLIANT`. It doesn't evaluate the NAT
-instance, because the NAT never registers with Systems Manager.
 
 > **Point to make:** compliance is evaluated continuously. The known exceptions also show that the rules
 > really evaluate this account's resources.

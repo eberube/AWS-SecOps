@@ -1,0 +1,338 @@
+# Validation checklist (macOS / zsh)
+
+The same checklist as [VALIDATION.md](VALIDATION.md), with every command written for the **macOS Terminal (zsh)**.
+It also works in bash. The expected results and talking points are identical.
+
+**Tools:** `brew install awscli` (v2.32 or newer, for `aws login`) and `brew install --cask session-manager-plugin`.
+Clone the repo with `git clone https://github.com/eberube/AWS-SecOps.git`.
+
+**Sign in** as your IAM admin user (not root), with MFA:
+```bash
+aws login --region us-east-1
+aws sts get-caller-identity
+```
+
+**Time:** about 45–60 minutes. AWS Config needs about 15 minutes after a deploy for its first evaluations, and CloudTrail
+delivers log files every 5–15 minutes.
+
+> Variables last only for the current Terminal window. If you open a new window, paste the section 0 block again.
+
+---
+
+## 0. Setup
+
+- [ ] **Set the console region to US East (N. Virginia) us-east-1** (the selector at the top right). GuardDuty, Config and
+      the instances exist only in the home region. In any other region, GuardDuty shows its "Try GuardDuty for free" page.
+- [ ] **Confirm the SNS subscription** (only after a fresh deploy). Click the link in the "AWS Notification – Subscription Confirmation" email.
+- [ ] Load the stack outputs into variables. Every later step uses these:
+
+```bash
+setopt interactive_comments 2>/dev/null
+export AWS_REGION=us-east-1 AWS_PAGER=""
+out_of() {
+  aws cloudformation describe-stacks --stack-name "$1" \
+    --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text
+}
+InstanceId=$(out_of secure-foundation-workload InstanceId)
+VpcId=$(out_of secure-foundation-network VpcId)
+LogBucket=$(out_of secure-foundation-security-baseline LogBucketName)
+BreakGlassUrl=$(out_of secure-foundation-security-baseline BreakGlassSwitchRoleUrl)
+AuditorUrl=$(out_of secure-foundation-security-baseline AuditorSwitchRoleUrl)
+echo "$InstanceId"; echo "$VpcId"; echo "$LogBucket"
+```
+
+- [ ] Three lines print: an `i-…` instance ID, a `vpc-…` ID and the log bucket name
+
+---
+
+## 1. Private EC2, Session Manager only
+
+**Requirement:** a private EC2 instance with no public IP, reachable only through Session Manager.
+
+```bash
+aws ssm describe-instance-information --query "InstanceInformationList[].{id:InstanceId,ping:PingStatus}"
+aws ec2 describe-instances --instance-ids "$InstanceId" \
+  --query "Reservations[].Instances[].{publicIp:PublicIpAddress,keyPair:KeyName,imds:MetadataOptions.HttpTokens,sg:SecurityGroups[0].GroupId}"
+Sg=$(aws ec2 describe-instances --instance-ids "$InstanceId" --query "Reservations[0].Instances[0].SecurityGroups[0].GroupId" --output text)
+aws ec2 describe-security-groups --group-ids "$Sg" --query "SecurityGroups[0].{inbound:IpPermissions,outbound:IpPermissionsEgress[].{port:FromPort,cidr:IpRanges[0].CidrIp}}"
+```
+
+- [ ] `PingStatus` is `Online`
+- [ ] `publicIp` and `keyPair` are both `null` (no IP to reach and no SSH key)
+- [ ] `imds` is `required` (IMDSv2 only)
+- [ ] The security group has **no inbound rules** (`[]`) and exactly one outbound rule: TCP 443
+
+Open a session and test egress from inside:
+
+```bash
+aws ssm start-session --target "$InstanceId"
+```
+Inside the session (the instance's own shell):
+```bash
+whoami
+curl -sI https://aws.amazon.com | head -1
+curl -m 5 http://example.com
+curl -s -o /dev/null -w "%{http_code}\n" http://169.254.169.254/latest/meta-data/
+curl -s -m 2 https://checkip.amazonaws.com
+exit
+```
+
+- [ ] `whoami` is `ssm-user`
+- [ ] HTTPS returns `HTTP/2 200`, plain HTTP times out after 5 seconds, and IMDSv1 returns `401`
+- [ ] `checkip` prints the **NAT instance's** public IP. The instance itself has none.
+
+> **Point to make:** there is no inbound path from the internet. The only way in is an IAM-authenticated, MFA-backed
+> Session Manager session, and outbound traffic is limited to HTTPS.
+
+---
+
+## 2. Session logging and encryption
+
+**Requirement:** sessions are encrypted with a CMK, and their transcripts are kept.
+
+```bash
+aws logs tail /secure-foundation/ssm/sessions --since 30m
+aws logs describe-log-groups --log-group-name-prefix /secure-foundation/ssm --query "logGroups[].{name:logGroupName,kms:kmsKeyId,days:retentionInDays}"
+aws ssm get-document --name SSM-SessionManagerRunShell --query Content --output text
+```
+
+- [ ] The tail shows the commands you typed in section 1. Allow about a minute after `exit`.
+- [ ] The log group has a `kmsKeyId` (the `logs` CMK) and 30-day retention
+- [ ] The preferences document has a `kmsKeyId` (the `data` CMK), `cloudWatchEncryptionEnabled: true`,
+      and a 20-minute idle timeout
+
+> **Point to make:** every admin action on the instance is recorded and encrypted at rest. The session
+> channel itself is wrapped in a second KMS layer on top of TLS.
+
+---
+
+## 3. CloudTrail and the encrypted log archive
+
+**Requirement:** a multi-region CloudTrail writing to an encrypted, versioned, private S3 bucket using a CMK.
+
+```bash
+aws cloudtrail get-trail-status --name secure-foundation-trail --query "{logging:IsLogging,lastDelivery:LatestDeliveryTime,lastError:LatestDeliveryError}"
+aws cloudtrail describe-trails --trail-name-list secure-foundation-trail \
+  --query "trailList[].{multiRegion:IsMultiRegionTrail,globalEvents:IncludeGlobalServiceEvents,kms:KmsKeyId,validation:LogFileValidationEnabled}"
+aws s3api get-bucket-encryption   --bucket "$LogBucket"
+aws s3api get-bucket-versioning   --bucket "$LogBucket"
+aws s3api get-public-access-block --bucket "$LogBucket"
+aws s3api get-bucket-ownership-controls --bucket "$LogBucket"
+aws s3api get-bucket-policy --bucket "$LogBucket" --query Policy --output text | grep -oE '"(Sid|Effect)":"[A-Za-z]+"'
+aws s3api get-bucket-logging --bucket "$LogBucket"
+for k in logs data; do
+  id=$(aws kms describe-key --key-id "alias/secure-foundation/$k" --query KeyMetadata.KeyId --output text)
+  aws kms get-key-rotation-status --key-id "$id" --query "{key:'$k',rotation:KeyRotationEnabled,days:RotationPeriodInDays}"
+done
+aws s3 ls "s3://$LogBucket/cloudtrail/AWSLogs/" --recursive --summarize | tail -2
+```
+
+- [ ] `logging: true`, with no `lastError`
+- [ ] Multi-region and global service events are on, a `KmsKeyId` is set, and log file validation is on
+- [ ] Bucket encryption is `aws:kms` with the CMK and a bucket key (`BlockedEncryptionTypes: SSE-C` is the S3 default for new buckets)
+- [ ] Versioning is `Enabled`, and all four Block Public Access settings are `true`
+- [ ] Ownership is `BucketOwnerEnforced` (ACLs are disabled)
+- [ ] The policy list starts with `"Effect":"Deny"` with no `Sid`: that's the TLS-only rule (`aws:SecureTransport = false`).
+      It's followed by the `FlowLogs*` and `Config*` service-delivery statements.
+- [ ] Server access logging goes to the separate access-log bucket under `log-bucket/`
+- [ ] `rotation: true` for both CMKs (yearly: `days: 365`)
+- [ ] `Total Objects` under `cloudtrail/` is above zero and grows over time (log and digest files from every region)
+
+**Optional tamper-evidence proof.** Digest files are written hourly, so run this at least an hour after the deploy:
+```bash
+TrailArn=$(aws cloudtrail describe-trails --trail-name-list secure-foundation-trail --query "trailList[0].TrailARN" --output text)
+Start=$(perl -MPOSIX -e 'print strftime("%Y-%m-%dT%H:%M:%SZ", gmtime(time - 7200))')
+aws cloudtrail validate-logs --trail-arn "$TrailArn" --start-time "$Start"
+```
+- [ ] Reports the files as `valid`
+
+> **Point to make:** the logs are encrypted with keys this account controls, versioned so nothing can be
+> silently overwritten, impossible to make public, TLS-only, and cryptographically verifiable.
+
+---
+
+## 4. GuardDuty, end to end
+
+**Requirement:** GuardDuty is enabled, and high-severity findings reach a human.
+
+```bash
+Det=$(aws guardduty list-detectors --query "DetectorIds[0]" --output text)
+aws guardduty get-detector --detector-id "$Det" --query "{status:Status,features:Features[?Status=='ENABLED'].Name}"
+aws guardduty create-sample-findings --detector-id "$Det" --finding-types 'Backdoor:EC2/C&CActivity.B!DNS'
+```
+*(The finding type is in single quotes on purpose. Inside double quotes, zsh would treat the `!` as history expansion.)*
+
+- [ ] The detector is `ENABLED`, with `S3_DATA_EVENTS` among the enabled features
+- [ ] Within about 5 minutes an email arrives from *secure-foundation security alerts* that reads
+      "GuardDuty finding Backdoor:EC2/C&CActivity.B!DNS (severity 8) in us-east-1 …"
+
+> **Point to make:** this tests the whole pipeline, not just the detector: GuardDuty, then an EventBridge rule
+> (severity 7 and above), then a KMS-encrypted SNS topic, then email.
+
+---
+
+## 5. AWS Config compliance
+
+**Requirement:** AWS Config (or Security Hub) evaluates the account continuously.
+
+```bash
+aws configservice describe-configuration-recorder-status --query "ConfigurationRecordersStatus[].{recording:recording,lastStatus:lastStatus}"
+aws configservice describe-compliance-by-config-rule \
+  --query "ComplianceByConfigRules[].{rule:ConfigRuleName,status:Compliance.ComplianceType}" --output table
+```
+
+- [ ] The recorder is `recording: true` with `lastStatus: SUCCESS`
+- [ ] All 13 rules are listed (named `secure-foundation-<managed-rule-id>`), and most are `COMPLIANT`
+
+If any EC2 rule shows `INSUFFICIENT_DATA`, it has no results yet. These rules only evaluate when a resource changes.
+Force an evaluation, then re-run the table after about 2 minutes:
+```bash
+aws configservice start-config-rules-evaluation --config-rule-names \
+  secure-foundation-ec2-imdsv2-check secure-foundation-ec2-instance-managed-by-ssm \
+  secure-foundation-ec2-instance-no-public-ip secure-foundation-encrypted-volumes
+```
+
+Show what each non-compliant rule flagged:
+```bash
+for r in $(aws configservice describe-compliance-by-config-rule --compliance-types NON_COMPLIANT \
+             --query "ComplianceByConfigRules[].ConfigRuleName" --output text); do
+  echo "$r -> $(aws configservice get-compliance-details-by-config-rule --config-rule-name "$r" --compliance-types NON_COMPLIANT \
+    --query "EvaluationResults[].EvaluationResultIdentifier.EvaluationResultQualifier.ResourceId" --output text)"
+done
+aws ec2 describe-vpcs --filters Name=is-default,Values=true --query "Vpcs[].VpcId" --output text
+```
+The last command prints the account's default VPC. It prints nothing if you've deleted it.
+
+**Expected, documented exceptions.** These are worth explaining rather than hiding:
+
+| Rule | Flags | Why it's acceptable |
+|------|-------|---------------------|
+| `secure-foundation-ec2-instance-no-public-ip` | The NAT instance | A NAT needs a public IP. In production, use `egress_mode=nat-gateway` (a managed service, not an EC2 instance). |
+| `secure-foundation-ec2-instance-managed-by-ssm` | The NAT instance | It's an appliance with no instance role, so it never registers with Systems Manager. A NAT Gateway removes it. This can take a re-evaluation to appear. |
+| `secure-foundation-vpc-flow-logs-enabled` | The account's **default VPC**, if it still exists | It's not part of this project, so it shows Config evaluates the *whole* account. Fix: delete the default VPC (README §1.4). |
+| `secure-foundation-vpc-default-security-group-closed` | The default VPC's default security group | Same cause and fix. After you delete the default VPC, this result can linger until Config records the deletion. |
+| `secure-foundation-root-account-mfa-enabled` | Only if root MFA is missing | Shows `COMPLIANT` once the manual hardening in README §1.1 is done. |
+
+> **Point to make:** compliance is evaluated continuously. The known exceptions also show that the rules
+> really evaluate this account's resources.
+
+---
+
+## 6. Break-glass admin role
+
+**Requirement:** a break-glass admin role that is MFA-gated and alerts whenever it is used.
+
+1. Sign in to the console as your IAM user **with MFA**. The role requires an MFA sign-in **less than an hour old**,
+   so sign in shortly before this step.
+2. Print the link, paste it into that browser and choose **Switch Role**:
+   ```bash
+   echo "$BreakGlassUrl"
+   ```
+3. Return with the top-right menu → **Switch back**.
+
+*CLI alternative:* add this to `~/.aws/config`. Get your MFA device ARN from `aws iam list-mfa-devices`.
+```ini
+[profile breakglass]
+role_arn = arn:aws:iam::<account-id>:role/secure-foundation-break-glass-admin
+source_profile = default
+mfa_serial = <MFA device ARN>
+region = us-east-1
+```
+```bash
+aws sts get-caller-identity --profile breakglass
+```
+
+- [ ] The switch succeeds, and the session is limited to 1 hour
+- [ ] Within 5–10 minutes an alert email arrives starting **BREAK-GLASS ROLE ASSUMED**, with the principal, source IP,
+      user agent, time, region, session name and CloudTrail event ID
+- [ ] The email contains **no credentials**. The raw `AssumeRole` event includes the issued access key ID and session
+      token, so the alert sends a summary of selected fields, and the full record stays in the encrypted trail.
+- [ ] *(Negative test)* The switch is **denied** from a session signed in without MFA, or whose MFA sign-in is more than an hour old
+
+> **Point to make:** admin rights exist for emergencies only. Using them requires recent MFA, a session lasts at
+> most an hour, and every use triggers an alert.
+
+---
+
+## 7. Read-only security auditor role
+
+**Requirement:** an auditor role that can see everything security-related and change nothing.
+
+```bash
+echo "$AuditorUrl"
+```
+Open the link in the browser and switch role. Then try these in the console, in region **us-east-1**:
+
+| Action | Expected |
+|--------|----------|
+| View GuardDuty findings, Config rules, CloudTrail event history | Allowed |
+| Browse and download objects in the log bucket | Allowed |
+| EC2 → select the instance → **Stop instance** | *You are not authorized* |
+| S3 → log bucket → **Delete** an object | *Access Denied* |
+| Systems Manager → **Start session** on the instance | Denied |
+
+- [ ] Every row behaves as expected
+
+> **Point to make:** least privilege. The auditor has broad visibility through the AWS-managed SecurityAudit policy plus
+> read access to the log archive, and no write access.
+
+---
+
+## 8. Network layers
+
+**Requirement:** a multi-AZ VPC with public and private subnets, controlled egress, and least-privilege SGs and NACLs.
+
+```bash
+aws ec2 describe-subnets --filters "Name=vpc-id,Values=$VpcId" \
+  --query "Subnets[].{az:AvailabilityZone,cidr:CidrBlock,autoPublicIp:MapPublicIpOnLaunch}" --output table
+aws ec2 describe-network-acls --filters "Name=vpc-id,Values=$VpcId" Name=default,Values=false \
+  --query "NetworkAcls[].Entries[?RuleAction=='allow'].{rule:RuleNumber,egress:Egress,cidr:CidrBlock,from:PortRange.From,to:PortRange.To}" --output table
+aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$VpcId" \
+  --query "RouteTables[].Routes[?DestinationCidrBlock=='0.0.0.0/0'].{gw:GatewayId,nat:NatGatewayId,eni:NetworkInterfaceId}"
+aws ec2 describe-flow-logs --filter "Name=resource-id,Values=$VpcId" --query "FlowLogs[].{status:FlowLogStatus,dest:LogDestination,traffic:TrafficType}"
+aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VpcId" Name=group-name,Values=default --query "SecurityGroups[0].{in:IpPermissions,out:IpPermissionsEgress}"
+```
+
+- [ ] 4 subnets across 2 AZs. Only the public subnets auto-assign public IPs.
+- [ ] The NACLs allow only TCP 443 and the ephemeral return range (1024–65535)
+- [ ] Public subnets route `0.0.0.0/0` to the internet gateway (`igw-…`). Private subnets route it to the NAT
+      instance's ENI (`eni-…`). One entry is `[]`: that's the VPC's unused main route table, which has no default route.
+- [ ] Flow logs are `ACTIVE`, capture `ALL` traffic, and deliver to the log archive bucket
+- [ ] The default security group has no rules
+
+> **Point to make:** defence in depth. Stateful security groups and stateless NACLs are independent layers,
+> and the flow logs feed both GuardDuty and forensic investigation.
+
+---
+
+## 9. Account guardrails and budget
+
+```bash
+Acct=$(aws sts get-caller-identity --query Account --output text)
+aws s3control get-public-access-block --account-id "$Acct"
+aws ec2 get-ebs-encryption-by-default
+aws accessanalyzer list-analyzers --query "analyzers[].{name:name,status:status}"
+aws budgets describe-budgets --account-id "$Acct" --query "Budgets[].{name:BudgetName,limit:BudgetLimit.Amount}"
+```
+
+- [ ] Account-level S3 Block Public Access is all `true`, and EBS encryption by default is `true`
+- [ ] IAM Access Analyzer is `ACTIVE`
+- [ ] The project budget exists alongside your own zero-spend budget
+
+---
+
+## 10. *(Optional)* Root activity alert
+
+Sign in as root briefly (with MFA) and sign straight out.
+
+- [ ] An alert email arrives starting **ROOT USER ACTIVITY**, showing the `ConsoleLogin` event, the source IP and the time
+
+Skipping this is also a defensible answer: "I'd verify it in a sandbox, but root stays locked away."
+
+---
+
+## After validation
+
+Tear down from a machine with the CDK toolchain installed (README §2 and §4): run `cdk destroy --all`, then
+`scripts/cleanup_leftovers.py --apply`, then `--include-bootstrap`. After 24–48 hours, check Billing → Bills to
+confirm the run-rate has dropped to $0.
